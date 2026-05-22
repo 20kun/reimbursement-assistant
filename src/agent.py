@@ -11,28 +11,54 @@ from openai import OpenAI
 
 from .policy import check_compliance, POLICY_RULES
 
-EXTRACTION_PROMPT = """你是一个专业的财务报销审核助手。请从这张发票/收据图片中提取以下信息。
+EXTRACTION_PROMPT = """你是财务发票识别专家。仔细阅读这张发票图片，提取关键信息。
 
-返回严格的JSON格式，不要有任何额外文字：
+## 识别指南
+- 增值税发票：vendor=销售方名称（非购买方），amount=价税合计小写金额
+- 餐饮发票/小票：vendor=餐厅/饭店名称，amount=合计/应收金额
+- 交通票：vendor=运输公司/出租车公司，amount=票价/金额
+- 住宿发票：vendor=酒店名称，amount=住宿费合计
 
-{
-  "vendor": "开票单位全称",
-  "amount": 金额数字(浮点数，不要货币符号),
-  "date": "YYYY-MM-DD格式的日期",
-  "category": "从以下分类中选择最匹配的：餐饮招待/差旅住宿/交通费/办公用品/培训会议/通讯费/快递费/其他",
-  "city": "消费发生城市（如可从发票判断），否则填null",
-  "tax_id": "发票上的税号（如有），否则填null",
-  "invoice_number": "发票号码（如有），否则填null",
-  "items": "购买物品或服务简述",
-  "attendee_count": 参与人数（如为餐饮招待），否则填null,
-  "notes": "其他值得注意的信息"
-}
+## 金额识别（重要）
+- 优先取「价税合计」「合计金额」「实收金额」「应收金额」中数字
+- 去掉¥符号、逗号、空格，只保留数字和小数点
+- 大写金额可对照验证，但以小写为准
 
-重要规则：
-- amount必须是纯数字，不含货币符号和逗号
-- date统一为YYYY-MM-DD格式
-- 如果某字段无法从发票识别，填null而非空字符串
-- 只返回JSON，不要任何解释"""
+## 日期识别
+- 增值税发票看「开票日期」
+- 小票看「日期」「时间」
+- 统一转YYYY-MM-DD格式，年必须是20xx
+
+## 分类判断
+- 餐厅/饭店/酒楼/快餐/咖啡/外卖 → 餐饮招待
+- 酒店/宾馆/民宿/旅馆 → 差旅住宿
+- 机票/高铁/火车/出租车/滴滴/加油/过路费 → 交通费
+- 文具/打印/耗材/电脑配件/纸张 → 办公用品
+- 培训费/会议费/报名费 → 培训会议
+- 快递/物流/运输费 → 快递费
+- 电话费/网费/手机充值 → 通讯费
+- 无法判断 → 其他
+
+## 城市识别
+- 增值税发票：看销售方地址前几个字，或发票监制章
+- 餐饮/酒店：看店铺地址或电话区号
+
+返回纯JSON（不要markdown代码块，不要解释文字）：
+
+{"vendor":"开票单位全称","amount":100.00,"date":"2025-06-15","category":"餐饮招待","city":"广州","tax_id":"91440101...","invoice_number":"发票号码","items":"购买物品或服务简述","attendee_count":null,"notes":""}
+
+字段说明：
+- vendor: 销售方/收款方全称（必填）
+- amount: 数字（必填）
+- date: YYYY-MM-DD（必填）
+- category: 餐饮招待/差旅住宿/交通费/办公用品/培训会议/通讯费/快递费/其他（必填）
+- city: 城市名或null
+- tax_id: 税号或null
+- invoice_number: 发票号或null
+- items: 商品/服务简述或null
+- attendee_count: 人数或null
+- notes: 备注或null
+如果某字段无法识别，填null"""
 
 
 class ReimbursementAgent:
