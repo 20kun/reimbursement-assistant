@@ -51,14 +51,14 @@ def init_agent():
     """Auto-init agent from secrets/env, no user input needed."""
     if st.session_state.agent is not None:
         return
-    api_key = _get_config("DEEPSEEK_API_KEY")
+    api_key = _get_config("DASHSCOPE_API_KEY")
     if not api_key:
-        st.session_state.agent_error = "未配置 DEEPSEEK_API_KEY，请联系管理员"
+        st.session_state.agent_error = "未配置 DASHSCOPE_API_KEY，请联系管理员"
         return
     try:
         st.session_state.agent = ReimbursementAgent(
             api_key=api_key,
-            base_url=_get_config("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            base_url=_get_config("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
         st.session_state.agent_error = None
     except Exception as e:
@@ -71,7 +71,7 @@ init_agent()
 # ── Sidebar ──────────────────────────────────────────────────
 with st.sidebar:
     st.title("🧾 智能报销助手")
-    st.caption("Powered by DeepSeek AI · v1.0")
+    st.caption("Powered by Qwen AI · v2.0")
 
     # Connection status
     if st.session_state.agent is not None:
@@ -347,7 +347,7 @@ else:
 # ── Footer ────────────────────────────────────────────────────
 st.divider()
 st.caption(
-    "🤖 智能报销助手 v1.0 | Powered by DeepSeek AI | "
+    "🤖 智能报销助手 v2.0 | Powered by Qwen AI | "
     "AI预审结果仅供参考，最终以财务审核为准 | "
     "Made for XPeng 效能跃升·AI开挂 赛题三"
 )

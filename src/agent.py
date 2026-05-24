@@ -1,6 +1,7 @@
-"""Core AI Agent — OCR extraction + policy compliance + form auto-fill.
+"""Core AI Agent — Invoice OCR + policy compliance + form auto-fill.
 
-Powered by DeepSeek API (OpenAI-compatible)."""
+Powered by Alibaba DashScope (qwen-vl-max) — native vision, excellent Chinese invoice OCR.
+"""
 
 import base64
 import json
@@ -30,17 +31,17 @@ EXTRACTION_PROMPT = """你是财务发票识别专家。仔细阅读这张发票
 - 统一转YYYY-MM-DD格式，年必须是20xx
 
 ## 分类判断
-- 餐厅/饭店/酒楼/快餐/咖啡/外卖 → 餐饮招待
-- 酒店/宾馆/民宿/旅馆 → 差旅住宿
-- 机票/高铁/火车/出租车/滴滴/加油/过路费 → 交通费
-- 文具/打印/耗材/电脑配件/纸张 → 办公用品
-- 培训费/会议费/报名费 → 培训会议
-- 快递/物流/运输费 → 快递费
-- 电话费/网费/手机充值 → 通讯费
+- 餐厅/饭店/酒楼/快餐/咖啡/外卖/烧烤/火锅 → 餐饮招待
+- 酒店/宾馆/民宿/旅馆/住宿 → 差旅住宿
+- 机票/高铁/火车/出租车/滴滴/加油/过路费/地铁/公交 → 交通费
+- 文具/打印/耗材/电脑/配件/纸张/办公 → 办公用品
+- 培训/会议/报名费 → 培训会议
+- 快递/物流/运输 → 快递费
+- 电话费/网费/手机充值/通讯 → 通讯费
 - 无法判断 → 其他
 
 ## 城市识别
-- 增值税发票：看销售方地址前几个字，或发票监制章
+- 增值税发票：看销售方地址前几个字
 - 餐饮/酒店：看店铺地址或电话区号
 
 返回纯JSON（不要markdown代码块，不要解释文字）：
@@ -65,36 +66,35 @@ class ReimbursementAgent:
     """Intelligent reimbursement assistant — OCR + compliance + auto-fill."""
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY is required. Set in .env file.")
-        base_url = base_url or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+            raise ValueError("DASHSCOPE_API_KEY is required. Set in .env file.")
+        base_url = base_url or os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.extractions: list[dict] = []
         self.total_saved_minutes = 0
 
     def extract_invoice(self, image_bytes: bytes, mime_type: str = "image/png") -> dict:
-        """Extract structured data from invoice image using DeepSeek Vision."""
+        """Extract structured data from invoice image using qwen-vl-max vision."""
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
         data_url = f"data:{mime_type};base64,{image_b64}"
 
         response = self.client.chat.completions.create(
-            model="deepseek-chat",
+            model="qwen-vl-max",
             max_tokens=1024,
             messages=[{
                 "role": "user",
                 "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
+                    {"type": "image_url", "image_url": {"url": data_url}},
                     {"type": "text", "text": EXTRACTION_PROMPT},
                 ],
             }],
         )
 
         raw = response.choices[0].message.content.strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1]
             if raw.endswith("```"):
@@ -107,11 +107,16 @@ class ReimbursementAgent:
             data = json.loads(raw)
         except json.JSONDecodeError:
             import re
-            match = re.search(r'\{[\s\S]*\}', raw)
+            match = re.search(r"\{[\s\S]*\}", raw)
             if match:
                 data = json.loads(match.group())
             else:
                 raise ValueError(f"Failed to parse AI response as JSON:\n{raw}")
+
+        try:
+            data["amount"] = float(data.get("amount", 0))
+        except (TypeError, ValueError):
+            data["amount"] = 0.0
 
         data["_extracted_at"] = date.today().isoformat()
         self.extractions.append(data)
@@ -150,7 +155,8 @@ class ReimbursementAgent:
 
         has_errors = any(v["severity"] == "error" for v in violations)
         overall = "violation" if has_errors else "needs_review"
-        risk = "high" if len([v for v in violations if v["severity"] == "error"]) > 1 else "medium" if has_errors else "low"
+        error_count = len([v for v in violations if v["severity"] == "error"])
+        risk = "high" if error_count > 1 else "medium" if has_errors else "low"
 
         checks = []
         for v in violations:
@@ -164,7 +170,7 @@ class ReimbursementAgent:
         return {
             "overall_status": overall,
             "checks": checks,
-            "summary": f"发现{len(violations)}项问题（{len([v for v in violations if v['severity']=='error'])}项错误，{len([v for v in violations if v['severity']=='warning'])}项提醒）",
+            "summary": f"发现{len(violations)}项问题（{error_count}项错误，{len([v for v in violations if v['severity']=='warning'])}项提醒）",
             "risk_level": risk,
         }
 
