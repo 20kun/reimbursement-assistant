@@ -6,15 +6,28 @@ Usage:
 
 import datetime
 import os
+import sys
 import time
+import traceback
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from src import ReimbursementAgent, generate_excel, FeishuBot, DEFAULT_POLICY
-from src.policy import get_default_policy, get_policy_for_category, get_extra_fields, PolicyRule
+_import_errors = []
+try:
+    from src import ReimbursementAgent, generate_excel, FeishuBot, DEFAULT_POLICY
+    from src.policy import get_default_policy, get_policy_for_category, get_extra_fields, PolicyRule
+except Exception as e:
+    _import_errors.append(f"Import failed: {e}\n{traceback.format_exc()}")
 
 load_dotenv()
+
+if _import_errors:
+    st.set_page_config(page_title="Error", page_icon="❌")
+    st.error("Import Error Details:")
+    for err in _import_errors:
+        st.code(err)
+    st.stop()
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
