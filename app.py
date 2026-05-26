@@ -5,14 +5,14 @@ Usage:
 """
 
 import datetime
-import io
 import os
 import time
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from src import ReimbursementAgent, generate_excel, FeishuBot, POLICY_RULES
+from src import ReimbursementAgent, generate_excel, FeishuBot, DEFAULT_POLICY
+from src.policy import get_default_policy, get_policy_for_category, get_extra_fields, PolicyRule
 
 load_dotenv()
 
@@ -34,13 +34,17 @@ for key, default in {
     "excel_bytes": None,
     "total_saved": 0,
     "agent_error": None,
+    "policy": None,
+    "extra_field_values": {},
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
+if st.session_state.policy is None:
+    st.session_state.policy = get_default_policy()
+
 
 def _get_config(key: str, default: str = "") -> str:
-    """Read config from Streamlit secrets (Cloud) or env (.env local)."""
     try:
         return st.secrets.get(key, os.getenv(key, default))
     except Exception:
@@ -48,7 +52,6 @@ def _get_config(key: str, default: str = "") -> str:
 
 
 def init_agent():
-    """Auto-init agent from secrets/env, no user input needed."""
     if st.session_state.agent is not None:
         return
     api_key = _get_config("DASHSCOPE_API_KEY")
@@ -58,14 +61,14 @@ def init_agent():
     try:
         st.session_state.agent = ReimbursementAgent(
             api_key=api_key,
-            base_url=_get_config("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            base_url=_get_config("DASHSCOPE_BASE_URL",
+                                 "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
         st.session_state.agent_error = None
     except Exception as e:
         st.session_state.agent_error = f"AI 服务初始化失败：{e}"
 
 
-# Auto-init on first load
 init_agent()
 
 # ── Sidebar ──────────────────────────────────────────────────
@@ -73,7 +76,6 @@ with st.sidebar:
     st.title("🧾 智能报销助手")
     st.caption("Powered by Qwen AI · v2.0")
 
-    # Connection status
     if st.session_state.agent is not None:
         st.success("🟢 AI 服务已就绪")
     elif st.session_state.agent_error:
@@ -81,7 +83,45 @@ with st.sidebar:
 
     st.divider()
 
-    # Feishu config (optional, collapsed by default)
+    # ── Customizable Policy Editor ──
+    with st.expander("🔧 政策配置（可更改）", expanded=False):
+        st.caption("修改各品类报销上限，实时生效")
+        policy = st.session_state.policy
+
+        for key in list(policy.keys()):
+            rule = policy[key]
+            new_max = st.number_input(
+                f"{rule.category}上限（¥）",
+                min_value=0.0,
+                value=float(rule.max_amount),
+                step=10.0,
+                format="%.0f",
+                key=f"policy_max_{key}",
+            )
+            cap_options = ["hard", "soft", "none"]
+            cap_idx = cap_options.index(rule.cap_mode) if rule.cap_mode in cap_options else 1
+            cap_label = st.selectbox(
+                f"{rule.category}超限处理",
+                options=cap_options,
+                index=cap_idx,
+                format_func=lambda x: {"hard": "强制截断（超出自理）",
+                                       "soft": "仅警告",
+                                       "none": "不限制"}.get(x, x),
+                key=f"policy_cap_{key}",
+            )
+            if new_max != rule.max_amount or cap_label != rule.cap_mode:
+                rule.max_amount = new_max
+                rule.cap_mode = cap_label
+            st.caption(f"  {rule.notes}")
+            st.divider()
+
+            if st.button("🔄 恢复默认政策", key="reset_policy", use_container_width=True):
+                st.session_state.policy = get_default_policy()
+                st.rerun()
+
+    st.divider()
+
+    # ── Feishu config ──
     with st.expander("📨 飞书推送（可选）"):
         feishu_url = st.text_input(
             "飞书 Webhook URL",
@@ -97,18 +137,7 @@ with st.sidebar:
 
     st.divider()
 
-    # Policy quick reference
-    with st.expander("📋 报销政策速查"):
-        for name, rule in POLICY_RULES.items():
-            if any(k in name for k in ["一线", "其他-", "高铁", "出租车", "机票", "市内"]):
-                continue
-            st.markdown(f"**{rule.category}** ≤¥{rule.max_amount:.0f}"
-                        f"{'/人' if rule.per_person else ''}")
-            st.caption(rule.notes)
-
-    st.divider()
-
-    # Stats
+    # ── Stats ──
     if st.session_state.total_saved > 0:
         st.metric("⏱️ 累计节省时间", f"{st.session_state.total_saved} 分钟")
         st.metric("📄 已处理发票", len(st.session_state.extractions))
@@ -118,14 +147,15 @@ with st.sidebar:
 st.title("🧾 智能报销助手")
 st.markdown("> 上传发票 → AI识别 → 合规检查 → 一键生成报销单 → 飞书推送审批")
 
-# Progress bar
 step_names = ["1. 上传发票", "2. AI识别提取", "3. 合规审核", "4. 生成报销单"]
 progress = st.session_state.step / len(step_names)
-st.progress(progress, text=f"步骤 {st.session_state.step}/{len(step_names)}: {step_names[st.session_state.step - 1]}")
+st.progress(progress, text=f"步骤 {st.session_state.step}/{len(step_names)}: {step_names[max(0, st.session_state.step - 1)]}")
 
 st.divider()
 
-# ── STEP 1 & 2: Upload & Extract ─────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# STEP 1 & 2: Upload & Extract
+# ═══════════════════════════════════════════════════════════════
 
 col_upload, col_result = st.columns([1, 1])
 
@@ -140,14 +170,15 @@ with col_upload:
 
     if uploaded_files:
         st.caption(f"已选择 {len(uploaded_files)} 个文件")
-
         agent_ready = st.session_state.agent is not None
 
         if st.button("🔍 AI 识别提取", type="primary", use_container_width=True,
                      disabled=not agent_ready):
             agent = st.session_state.agent
+            custom_policy = st.session_state.policy
             st.session_state.extractions = []
             st.session_state.compliance_results = []
+            st.session_state.extra_field_values = {}
             progress_bar = st.progress(0)
             status_text = st.empty()
 
@@ -162,11 +193,12 @@ with col_upload:
 
                 try:
                     extraction = agent.extract_invoice(img_bytes, mime)
-                    compliance = agent.check_compliance(extraction)
+                    compliance = agent.check_compliance(extraction, policy=custom_policy)
                     extraction["_filename"] = file.name
                     extraction["_compliance"] = compliance
                     st.session_state.extractions.append(extraction)
                     st.session_state.compliance_results.append(compliance)
+                    st.session_state.extra_field_values[i] = {}
                 except Exception as e:
                     st.error(f"识别 {file.name} 失败：{e}")
 
@@ -179,7 +211,7 @@ with col_upload:
             st.rerun()
 
         if not agent_ready:
-            st.warning("AI 服务未就绪，请检查 .env 中的 DEEPSEEK_API_KEY 配置")
+            st.warning("AI 服务未就绪，请联系管理员配置 API Key")
 
     if st.session_state.total_saved > 0:
         st.info(f"⏱️ AI已为您节省约 **{st.session_state.total_saved} 分钟**（对比手动录入）")
@@ -189,29 +221,59 @@ with col_result:
 
     if st.session_state.extractions:
         for i, ext in enumerate(st.session_state.extractions):
+            comp = ext.get("_compliance", {})
             status_icon = {
                 "pass": "🟢", "violation": "🔴", "needs_review": "🟡",
-            }.get(ext.get("_compliance", {}).get("overall_status", ""), "⚪")
+            }.get(comp.get("overall_status", ""), "⚪")
+
+            actual = comp.get("actual_amount", ext.get("amount", 0))
+            reimbursable = comp.get("reimbursable_amount", actual)
+            capped_mark = " ⚡" if comp.get("is_capped") else ""
+
             with st.expander(
-                f"{status_icon} ¥{ext.get('amount', 0):.2f} | "
+                f"{status_icon} ¥{actual:,.2f}{capped_mark} | "
                 f"{ext.get('vendor', '未知')[:20]} | {ext.get('date', '')}",
                 expanded=(i == 0),
             ):
-                cols = st.columns(3)
-                cols[0].metric("金额", f"¥{ext.get('amount', 0):,.2f}")
-                cols[1].metric("类别", ext.get('category', '其他'))
-                cols[2].metric("日期", ext.get('date', '未知'))
+                # Amount display
+                if comp.get("is_capped"):
+                    col_amt, col_reim = st.columns(2)
+                    col_amt.metric("实际金额", f"¥{actual:,.2f}")
+                    col_reim.metric("可报销金额", f"¥{reimbursable:,.2f}",
+                                    delta=f"-¥{actual - reimbursable:,.2f}")
+                else:
+                    cols = st.columns(3)
+                    cols[0].metric("金额", f"¥{actual:,.2f}")
+                    cols[1].metric("类别", ext.get("category", "其他"))
+                    cols[2].metric("日期", ext.get("date", "未知"))
 
                 st.caption(f"**开票单位**：{ext.get('vendor', '')}")
                 st.caption(f"**发票号**：{ext.get('invoice_number', '无')}")
                 st.caption(f"**税号**：{ext.get('tax_id', '无')}")
                 st.caption(f"**明细**：{ext.get('items', '无')}")
-                if ext.get('city'):
+                if ext.get("city"):
                     st.caption(f"**城市**：{ext['city']}")
-                if ext.get('attendee_count'):
-                    st.caption(f"**人数**：{ext['attendee_count']}")
+                if ext.get("attendee_count"):
+                    st.caption(f"**识别人数**：{ext['attendee_count']}")
 
-                comp = ext.get("_compliance", {})
+                # Category-specific extra fields
+                extra_fields = comp.get("extra_fields", {})
+                if extra_fields:
+                    st.markdown("---")
+                    st.caption("**补充信息**（根据报销类别要求填写）：")
+                    vals = st.session_state.extra_field_values.setdefault(i, {})
+                    cols = st.columns(min(len(extra_fields), 3))
+                    for j, (field_key, field_label) in enumerate(extra_fields.items()):
+                        col_idx = j % 3
+                        vals[field_key] = cols[col_idx].text_input(
+                            field_label,
+                            value=vals.get(field_key, ""),
+                            key=f"extra_{i}_{field_key}",
+                            placeholder=f"请输入{field_label}",
+                        )
+
+                # Compliance
+                st.markdown("---")
                 badge = {"pass": "✅ 合规", "violation": "❌ 违规", "needs_review": "⚠️ 待补充"}
                 st.markdown(f"**审核结果**：{badge.get(comp.get('overall_status', ''), '')}")
 
@@ -223,7 +285,9 @@ with col_result:
 
 st.divider()
 
-# ── STEP 3 & 4: Compliance Summary & Generate Form ───────────
+# ═══════════════════════════════════════════════════════════════
+# STEP 3 & 4: Compliance Summary & Generate Form
+# ═══════════════════════════════════════════════════════════════
 
 if st.session_state.extractions:
     col_review, col_generate = st.columns([1, 1])
@@ -247,13 +311,21 @@ if st.session_state.extractions:
         else:
             st.warning("📝 部分发票信息不完整，建议补充")
 
-        total_amount = sum(float(e.get("amount", 0)) for e in st.session_state.extractions)
+        total_actual = sum(
+            float(c.get("actual_amount", e.get("amount", 0)))
+            for e, c in zip(st.session_state.extractions, st.session_state.compliance_results)
+        )
+        total_reimbursable = sum(
+            float(c.get("reimbursable_amount", e.get("amount", 0)))
+            for e, c in zip(st.session_state.extractions, st.session_state.compliance_results)
+        )
+        total_capped = total_actual - total_reimbursable
+
         cols = st.columns(4)
         cols[0].metric("📄 发票数", len(st.session_state.extractions))
-        cols[1].metric("💰 合计金额", f"¥{total_amount:,.2f}")
-        cols[2].metric("✅ 合规数",
-                       sum(1 for c in st.session_state.compliance_results
-                           if c.get("overall_status") == "pass"))
+        cols[1].metric("💰 实际金额", f"¥{total_actual:,.2f}")
+        cols[2].metric("✅ 可报销", f"¥{total_reimbursable:,.2f}",
+                       delta=f"-¥{total_capped:,.2f}" if total_capped > 0 else None)
         cols[3].metric("⚠️ 问题数",
                        sum(1 for c in st.session_state.compliance_results
                            if c.get("overall_status") != "pass"))
@@ -271,6 +343,11 @@ if st.session_state.extractions:
                      use_container_width=True, disabled=not can_generate):
             agent = st.session_state.agent
             if agent:
+                # Merge extra field values into extractions
+                for i, ext in enumerate(st.session_state.extractions):
+                    extra_vals = st.session_state.extra_field_values.get(i, {})
+                    ext["_extra_fields"] = extra_vals
+
                 form_data = agent.auto_fill_form(st.session_state.extractions)
                 form_data["申请人"] = applicant
                 form_data["部门"] = department
@@ -279,7 +356,8 @@ if st.session_state.extractions:
                 overall = "violation" if any_error else ("needs_review" if not all_pass else "pass")
                 compliance_summary = {
                     "overall_status": overall,
-                    "summary": f"共{len(st.session_state.extractions)}张发票，合计¥{total_amount:,.2f}",
+                    "summary": f"共{len(st.session_state.extractions)}张发票，"
+                               f"实际¥{total_actual:,.2f}，可报销¥{total_reimbursable:,.2f}",
                     "checks": [],
                 }
                 for c in st.session_state.compliance_results:
@@ -289,7 +367,7 @@ if st.session_state.extractions:
                 st.session_state.form_data = form_data
                 st.session_state.excel_bytes = excel_bytes
                 st.session_state.step = 4
-                st.success("✅ 报销单生成成功！")
+                st.success(f"✅ 报销单生成成功！可报销 ¥{total_reimbursable:,.2f}")
                 st.rerun()
 
         if st.session_state.excel_bytes:
@@ -302,7 +380,6 @@ if st.session_state.extractions:
                 use_container_width=True,
             )
 
-            # Feishu push
             st.divider()
             st.subheader("📨 推送飞书审批")
             if st.button("🚀 发送到飞书", use_container_width=True,
@@ -310,7 +387,7 @@ if st.session_state.extractions:
                 bot = FeishuBot(webhook_url=feishu_url, secret=feishu_secret)
                 success = bot.send_approval_notification(
                     applicant=applicant,
-                    total_amount=total_amount,
+                    total_amount=total_reimbursable,
                     invoice_count=len(st.session_state.extractions),
                     compliance_status=overall,
                 )
@@ -322,7 +399,6 @@ if st.session_state.extractions:
 
     st.divider()
 
-    # ROI Display
     if st.session_state.total_saved > 0:
         with st.expander("📊 效率报告 & ROI 计算"):
             col1, col2, col3, col4 = st.columns(4)
@@ -344,7 +420,6 @@ if st.session_state.extractions:
 else:
     st.info('👆 请上传发票图片，点击「AI识别提取」开始')
 
-# ── Footer ────────────────────────────────────────────────────
 st.divider()
 st.caption(
     "🤖 智能报销助手 v2.0 | Powered by Qwen AI | "

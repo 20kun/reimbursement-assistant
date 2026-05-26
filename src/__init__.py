@@ -3,7 +3,7 @@
 from .agent import ReimbursementAgent
 from .form_generator import generate_excel
 from .feishu import FeishuBot
-from .policy import POLICY_RULES, check_compliance
+from .policy import DEFAULT_POLICY, check_compliance, get_default_policy
 
-__version__ = "1.0.0"
-__all__ = ["ReimbursementAgent", "generate_excel", "FeishuBot", "POLICY_RULES", "check_compliance"]
+__version__ = "2.0.0"
+__all__ = ["ReimbursementAgent", "generate_excel", "FeishuBot", "DEFAULT_POLICY", "check_compliance", "get_default_policy"]

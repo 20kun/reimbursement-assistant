@@ -10,7 +10,7 @@ from datetime import date
 
 from openai import OpenAI
 
-from .policy import check_compliance, POLICY_RULES
+from .policy import check_compliance, DEFAULT_POLICY
 
 EXTRACTION_PROMPT = """你是财务发票识别专家。仔细阅读这张发票图片，提取关键信息。
 
@@ -123,35 +123,52 @@ class ReimbursementAgent:
         self.total_saved_minutes += 5
         return data
 
-    def check_compliance(self, extraction: dict) -> dict:
-        """Run policy compliance checks on extracted invoice data."""
+    def check_compliance(self, extraction: dict, policy: dict | None = None) -> dict:
+        """Run policy compliance checks on extracted invoice data.
+
+        Returns dict with overall_status, checks, summary, risk_level,
+        reimbursable_amount, actual_amount, extra_fields.
+        """
         category = extraction.get("category", "其他")
         amount = float(extraction.get("amount", 0))
         city = extraction.get("city")
-        attendee_count = extraction.get("attendee_count")
-        has_attendees = attendee_count is not None and attendee_count > 0
+        attendee_count = extraction.get("attendee_count") or 0
+        has_attendees = attendee_count > 0
 
-        violations = check_compliance(
+        violations, reimbursable = check_compliance(
             category=category,
             amount=amount,
             city=city,
             has_attendees=has_attendees,
             has_pre_approval=False,
             has_detail_list=bool(extraction.get("items")),
+            attendee_count=attendee_count,
+            policy=policy,
         )
 
+        from .policy import get_extra_fields
+        extra_fields = get_extra_fields(category, policy)
+
+        result = {
+            "actual_amount": amount,
+            "reimbursable_amount": reimbursable,
+            "is_capped": reimbursable < amount,
+            "extra_fields": extra_fields,
+        }
+
         if not violations:
-            return {
+            result.update({
                 "overall_status": "pass",
                 "checks": [{
                     "rule": "所有规则",
                     "status": "pass",
-                    "detail": "报销申请符合公司政策",
+                    "detail": f"报销申请符合公司政策，可报销金额 ¥{reimbursable:.2f}",
                     "suggestion": None,
                 }],
                 "summary": "合规，可直接提交",
                 "risk_level": "low",
-            }
+            })
+            return result
 
         has_errors = any(v["severity"] == "error" for v in violations)
         overall = "violation" if has_errors else "needs_review"
@@ -167,29 +184,39 @@ class ReimbursementAgent:
                 "suggestion": v["fix"],
             })
 
-        return {
+        result.update({
             "overall_status": overall,
             "checks": checks,
-            "summary": f"发现{len(violations)}项问题（{error_count}项错误，{len([v for v in violations if v['severity']=='warning'])}项提醒）",
+            "summary": f"发现{len(violations)}项问题（{error_count}项错误，{len([v for v in violations if v['severity']=='warning'])}项提醒），可报销 ¥{reimbursable:.2f}",
             "risk_level": risk,
-        }
+        })
+        return result
 
     def auto_fill_form(self, extractions: list[dict]) -> dict:
         """Generate complete reimbursement form data from extractions."""
-        total = sum(float(e.get("amount", 0)) for e in extractions)
-
         items = []
+        total_actual = 0.0
+        total_reimbursable = 0.0
+
         for i, e in enumerate(extractions):
+            actual = float(e.get("amount", 0))
+            reimbursable = float(e.get("_compliance", {}).get("reimbursable_amount", actual))
+            is_capped = reimbursable < actual
+
             items.append({
                 "序号": i + 1,
                 "日期": e.get("date", ""),
                 "类别": e.get("category", "其他"),
-                "金额": float(e.get("amount", 0)),
+                "实际金额": actual,
+                "可报销金额": reimbursable,
+                "是否截断": "是" if is_capped else "否",
                 "开票单位": e.get("vendor", ""),
                 "发票号": e.get("invoice_number", ""),
                 "事由/物品": e.get("items", ""),
                 "城市": e.get("city") or "",
             })
+            total_actual += actual
+            total_reimbursable += reimbursable
 
         return {
             "申请人": "",
@@ -197,7 +224,8 @@ class ReimbursementAgent:
             "报销日期": date.today().isoformat(),
             "报销事由": "",
             "明细": items,
-            "合计金额": total,
+            "合计金额": total_actual,
+            "合计可报销": total_reimbursable,
             "附件数量": len(extractions),
         }
 

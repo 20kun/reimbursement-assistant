@@ -85,7 +85,8 @@ def generate_excel(form_data: dict, compliance_result: dict | None = None) -> by
     row += 1
 
     # --- Table header ---
-    headers = ["序号", "日期", "类别", "金额（元）", "开票单位", "发票号码", "事由/物品明细", "备注"]
+    has_reimbursable = any("可报销金额" in item for item in form_data.get("明细", []))
+    headers = ["序号", "日期", "类别", "实际金额", "可报销金额", "开票单位", "发票号码", "事由/物品明细", "备注"]
     for col_idx, header in enumerate(headers, 1):
         cell = ws.cell(row=row, column=col_idx, value=header)
         cell.font = header_font
@@ -94,18 +95,34 @@ def generate_excel(form_data: dict, compliance_result: dict | None = None) -> by
         cell.border = thin_border
     row += 1
 
+    # Update column widths for new columns
+    col_widths = {"A": 6, "B": 12, "C": 10, "D": 12, "E": 12, "F": 22, "G": 16, "H": 22, "I": 14}
+    for col, width in col_widths.items():
+        ws.column_dimensions[col].width = width
+
     # --- Table body ---
     items = form_data.get("明细", [])
     for item in items:
+        actual = float(item.get("实际金额", item.get("金额", 0)))
+        reimbursable = float(item.get("可报销金额", actual))
+        capped = item.get("是否截断", "否")
+        notes_parts = []
+        if capped == "是":
+            notes_parts.append(f"超限截断 ¥{actual - reimbursable:,.2f}")
+        extra = item.get("_extra_fields", {})
+        if extra:
+            notes_parts.extend(f"{v}" for v in extra.values() if v)
+
         values = [
             item.get("序号", ""),
             item.get("日期", ""),
             item.get("类别", ""),
-            float(item.get("金额", 0)),
+            actual,
+            reimbursable,
             item.get("开票单位", ""),
             item.get("发票号", ""),
             item.get("事由/物品", ""),
-            "",
+            "；".join(notes_parts) if notes_parts else "",
         ]
         for col_idx, val in enumerate(values, 1):
             cell = ws.cell(row=row, column=col_idx, value=val)
@@ -133,14 +150,23 @@ def generate_excel(form_data: dict, compliance_result: dict | None = None) -> by
         c.border = thin_border
         c.fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
 
-    total_cell = ws.cell(row=row, column=4, value=float(form_data.get("合计金额", 0)))
-    total_cell.font = Font(name="微软雅黑", size=10, bold=True)
-    total_cell.number_format = '#,##0.00'
-    total_cell.alignment = right_align
-    total_cell.border = thin_border
-    total_cell.fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
+    # Actual total
+    total_actual = ws.cell(row=row, column=4, value=float(form_data.get("合计金额", 0)))
+    total_actual.font = Font(name="微软雅黑", size=10, bold=True)
+    total_actual.number_format = '#,##0.00'
+    total_actual.alignment = right_align
+    total_actual.border = thin_border
+    total_actual.fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
 
-    for col in range(5, 9):
+    # Reimbursable total
+    total_reim = ws.cell(row=row, column=5, value=float(form_data.get("合计可报销", 0)))
+    total_reim.font = Font(name="微软雅黑", size=10, bold=True)
+    total_reim.number_format = '#,##0.00'
+    total_reim.alignment = right_align
+    total_reim.border = thin_border
+    total_reim.fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
+
+    for col in range(6, 10):
         c = ws.cell(row=row, column=col)
         c.border = thin_border
         c.fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
