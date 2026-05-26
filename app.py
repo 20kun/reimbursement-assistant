@@ -22,13 +22,6 @@ except Exception as e:
 
 load_dotenv()
 
-if _import_errors:
-    st.set_page_config(page_title="Error", page_icon="❌")
-    st.error("Import Error Details:")
-    for err in _import_errors:
-        st.code(err)
-    st.stop()
-
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
     page_title="智能报销助手 | XPeng",
@@ -36,6 +29,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if _import_errors:
+    st.error("Import Error Details:")
+    for err in _import_errors:
+        st.code(err)
+    st.stop()
 
 # ── Session state init ───────────────────────────────────────
 for key, default in {
