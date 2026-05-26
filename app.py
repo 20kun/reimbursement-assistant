@@ -6,19 +6,13 @@ Usage:
 
 import datetime
 import os
-import sys
 import time
-import traceback
 
 import streamlit as st
 from dotenv import load_dotenv
 
-_import_errors = []
-try:
-    from src import ReimbursementAgent, generate_excel, FeishuBot, DEFAULT_POLICY
-    from src.policy import get_default_policy, get_policy_for_category, get_extra_fields, PolicyRule
-except Exception as e:
-    _import_errors.append(f"Import failed: {e}\n{traceback.format_exc()}")
+from src import ReimbursementAgent, generate_excel, FeishuBot, DEFAULT_POLICY
+from src.policy import get_default_policy, get_policy_for_category, get_extra_fields, PolicyRule
 
 load_dotenv()
 
@@ -29,12 +23,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-if _import_errors:
-    st.error("Import Error Details:")
-    for err in _import_errors:
-        st.code(err)
-    st.stop()
 
 # ── Session state init ───────────────────────────────────────
 for key, default in {
@@ -127,9 +115,9 @@ with st.sidebar:
             st.caption(f"  {rule.notes}")
             st.divider()
 
-            if st.button("🔄 恢复默认政策", key="reset_policy", use_container_width=True):
-                st.session_state.policy = get_default_policy()
-                st.rerun()
+        if st.button("🔄 恢复默认政策", key="reset_policy", use_container_width=True):
+            st.session_state.policy = get_default_policy()
+            st.rerun()
 
     st.divider()
 
